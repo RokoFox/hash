@@ -1,0 +1,4 @@
+hash
+====
+
+Haskell-based shell
