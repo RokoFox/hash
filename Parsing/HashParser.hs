@@ -29,7 +29,7 @@ betterParse :: Parser a -> String -> Either ParseError a
 betterParse p = parse (spaces *> p) err
 
 anyString :: Parser String
-anyString = token $ many1 (noneOf ['=', ' ', '<', '>', '(', ')', '\n', ';', '{', '}'])
+anyString = token $ many1 (noneOf ['=', ' ', '<', '>', '(', ')', '\n', ';', '{', '}', '#'])
 
 anyLitString :: Parser String
 anyLitString = token $ many (noneOf ['"'])
@@ -77,7 +77,7 @@ inputRedir :: Parser Expr
 inputRedir = do
   char '<'
   spaces
-  redirExpr <- expr
+  redirExpr <- (try stringLiteral <|> expr)
   return redirExpr
   
 outputRedir :: Parser (Expr, Bool)
@@ -85,7 +85,7 @@ outputRedir = do
   char '>'
   appended <- optionMaybe (char '>')
   spaces
-  redirExpr <- expr
+  redirExpr <- (try stringLiteral <|> expr)
   spaces
   return (redirExpr, not $ isNothing appended)
  
@@ -176,9 +176,16 @@ conditional = do
   spaces
   return (IfElse cnd cmds1 $ fromMaybe [] cmds2)
 
+comment :: Parser ()
+comment = do
+  symbol '#'
+  token $ many (noneOf ['#'])
+  symbol '#'
+  return ()
+  
 
 tlexpr :: Parser TLExpr
-tlexpr = try (TLCmd <$> cmdOrAssign) <|> (TLCnd <$> conditional)
+tlexpr = many comment *> (try (TLCmd <$> cmdOrAssign) <|> (TLCnd <$> conditional))
   
   
 

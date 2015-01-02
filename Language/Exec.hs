@@ -6,6 +6,9 @@ import qualified Data.Map as M
 import Data.Maybe (maybe, fromMaybe, isNothing, fromJust)
 import Hash.Language.Expressions
 import Hash.Parsing.HashParser
+import System.Directory (canonicalizePath)
+import System.FilePath ((</>), isRelative, splitFileName)
+
 
 
 -- A model of a command which is waiting for arguments and a state to run
@@ -35,12 +38,22 @@ executeCmd :: ScriptState -> CommandTable -> Cmd -> IO ScriptState
 executeCmd ss ct (Cmd cmdName args input out isAppend) = do
   let vs = varSub (vartable ss)
   let cmdName' = vs cmdName
+  let prepareFP fp = do
+        a <- absolutePath (wd ss) $ vs fp
+        putStrLn a
+        return $ subVarFromLit (vartable ss) a
+
   let cmd = fromMaybe (error ("command " ++ cmdName' ++ " does not exist\n")) $ M.lookup cmdName' ct
-  fromFile <- maybe (pure "" :: IO String) readFile (fmap vs input)
-  let args' = args ++ parsed (betterParse (manyExpr) fromFile)
+  canonInput <- if isNothing input then pure Nothing :: IO (Maybe FilePath) 
+                                   else fmap Just $ prepareFP (fromJust input)
+  fromFile <- maybe (pure "" :: IO String) readFile canonInput
+  let args' = args ++ if fromFile == "" then [] else [(Str fromFile)]
   newSs <- cmd (map vs args') ss
 
-  unless (isNothing out) $ (if isAppend then appendFile else writeFile) (vs $ fromJust out) $ output newSs
+  unless (isNothing out) $ do
+      canonOut <- prepareFP $ fromJust out
+      (if isAppend then appendFile else writeFile) 
+         canonOut $ output newSs
 
   when (isNothing out) $ putStr $ output newSs
 
@@ -98,5 +111,19 @@ runTopLevel t ss (TLCnd (IfElse pred trueCl falseCl)) = do
   return newSs
 
 
-  
+absolutePath :: FilePath -> FilePath -> IO FilePath
+absolutePath wDir fp = do
+  let (dir, fn) = splitFileName fp
+  canonDir <- if isRelative dir then canonicalizePath (wDir </> dir) else canonicalizePath dir
+  return (canonDir </> fn)   
+
+
+subVarFromLit :: VarTable -> String -> String
+subVarFromLit vt str =  concatMap (\(f,s) -> if odd s then subVars f else f) $ findVars str 0
+  where findVars "" i = [("",i)]
+        findVars (c:str) i
+          | c == '$'  = ("", i) : findVars str (i+1)
+          | otherwise = let ((h,ind):t) = findVars str i in (((c:h),ind):t)
+        subVars str = fromMaybe (error "variable " ++ str ++ 
+                         " does not exist\n") $ M.lookup str vt
 
