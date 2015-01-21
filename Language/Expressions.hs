@@ -1,4 +1,4 @@
-module Hash.Language.Expressions where
+module Language.Expressions where
 
 
 
@@ -35,16 +35,28 @@ data Pred = Pred Comp -- A wrapped comparison
           | Parens Pred -- An expression in parentheses
             deriving (Eq, Show)
 
+data ArithExpr = Val Expr
+               | Neg ArithExpr
+               | Plus ArithExpr ArithExpr
+               | Minus ArithExpr ArithExpr
+               | Mul ArithExpr ArithExpr
+               | Div ArithExpr ArithExpr
+               | Mod ArithExpr ArithExpr
+               | Exp ArithExpr ArithExpr
+               | ParensAE ArithExpr
+                 deriving (Eq, Show)
 
-data Conditional = If { cond  :: Pred -- Predicate to satisfy
-                      , cthen :: [Cmd] -- Actions if satisfied
-                      }
-                 | IfElse { cond  :: Pred -- Predicate to satisfy
-                          , cthen :: [Cmd] -- Actions if satisfied
-                          , celse :: [Cmd] -- Actions otherwise
+
+data Conditional = IfElse { cond  :: Pred -- Predicate to satisfy
+                          , cthen :: [TLExpr] -- Actions if satisfied
+                          , celse :: [TLExpr] -- Actions otherwise
                       }
                         deriving Show
 
-data TLExpr = TLCmd Cmd
-            | TLCnd Conditional
+data WhileLoop = WhileLoop { condW :: Pred
+                           , cmds :: [TLExpr] } deriving Show
+
+data TLExpr = TLCmd  Cmd
+            | TLCnd  Conditional
+            | TLLoop WhileLoop  
                deriving Show

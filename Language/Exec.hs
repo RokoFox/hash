@@ -1,11 +1,11 @@
-module Hash.Language.Exec where
+module Language.Exec where
 
 import Control.Applicative (pure)
 import Control.Monad (when, unless, foldM)
 import qualified Data.Map as M
 import Data.Maybe (maybe, fromMaybe, isNothing, fromJust)
-import Hash.Language.Expressions
-import Hash.Parsing.HashParser
+import Language.Expressions
+import Parsing.HashParser
 import System.Directory (canonicalizePath)
 import System.FilePath ((</>), isRelative, splitFileName)
 
@@ -28,10 +28,12 @@ data ScriptState = ScriptState { output :: String
                              , vartable :: VarTable
 } deriving Show
 
--- unwraps str expressions and substitutes var expressions with their values
+-- unwraps Str expressions and substitutes Var expressions with their values
 varSub :: VarTable -> Expr -> String
 varSub vt (Str s) = s
-varSub vt (Var s) = fromMaybe (error "variable " ++ s ++ " does not exist\n") $ M.lookup s vt
+varSub vt (Var s@(h:t))
+  | h == '['  = show $ evalArith vt (parseArithExpr t)
+  | otherwise = fromMaybe (error ("variable " ++ s ++ " does not exist\n")) $ M.lookup s vt
 
 -- executes a command
 executeCmd :: ScriptState -> CommandTable -> Cmd -> IO ScriptState
@@ -40,23 +42,20 @@ executeCmd ss ct (Cmd cmdName args input out isAppend) = do
   let cmdName' = vs cmdName
   let prepareFP fp = do
         a <- absolutePath (wd ss) $ vs fp
-        putStrLn a
         return $ subVarFromLit (vartable ss) a
 
   let cmd = fromMaybe (error ("command " ++ cmdName' ++ " does not exist\n")) $ M.lookup cmdName' ct
   canonInput <- if isNothing input then pure Nothing :: IO (Maybe FilePath) 
                                    else fmap Just $ prepareFP (fromJust input)
   fromFile <- maybe (pure "" :: IO String) readFile canonInput
-  let args' = args ++ if fromFile == "" then [] else [(Str fromFile)]
+  let argsff = parseArgs fromFile
+  let args' = args ++ if fromFile == "" then [] else argsff
   newSs <- cmd (map vs args') ss
 
-  unless (isNothing out) $ do
+  if isNothing out then putStr $ output newSs
+    else (do
       canonOut <- prepareFP $ fromJust out
-      (if isAppend then appendFile else writeFile) 
-         canonOut $ output newSs
-
-  when (isNothing out) $ putStr $ output newSs
-
+      (if isAppend then appendFile else writeFile) canonOut $ output newSs)
   return newSs
   
 
@@ -65,7 +64,7 @@ executeCmd ss ct (Cmd cmdName args input out isAppend) = do
 -- blank, ScriptState. Otherwise, it is given the state as left by the previous
 -- command's execution.
 runHashProgram :: CommandTable -> Either FilePath ScriptState -> [TLExpr] -> IO ScriptState
-runHashProgram _  (Left _)  []         = error "No commands to run"
+runHashProgram _  (Left fp)  []         = return (ScriptState {output = "", wd = fp, vartable = M.empty})
 runHashProgram ct (Left fp) (tle:tles) = do
   newSs <- runTopLevel ct (ScriptState {output = "", wd = fp, vartable = M.empty}) tle
   runHashProgram ct (Right newSs) tles
@@ -75,6 +74,17 @@ runHashProgram ct (Right ss) (tle:tles) = do
   runHashProgram ct (Right newSs) tles
 
 
+evalArith :: VarTable -> ArithExpr -> Int
+evalArith vt expr = let eA = evalArith vt in case expr of
+    Val e -> read $ varSub vt e :: Int
+    Neg e -> - eA e
+    Plus e1 e2 -> eA e1 + eA e2
+    Minus e1 e2 -> eA e1 - eA e2
+    Mul e1 e2 -> eA e1 * eA e2
+    Div e1 e2 -> div (eA e1) $ eA e2
+    Mod e1 e2 -> mod (eA e1) $ eA e2
+    Exp e1 e2 -> eA e1 ^ eA e2
+    ParensAE e -> eA e
 
 evalComp :: ScriptState -> Comp -> Bool
 evalComp ss c = let vs = varSub (vartable ss) in case c of
@@ -97,19 +107,29 @@ evalPred ss p = case p of
 
 -- Calculates the result of a top-level command execution
 runTopLevel :: CommandTable -> ScriptState -> TLExpr -> IO ScriptState
-runTopLevel t ss (TLCmd cmd) = do
-  let vs = varSub (vartable ss)
-  case cmd of
-    (Cmd _ _ _ _ _) ->
-      executeCmd ss t cmd
-    (Assign var val) -> do
-      let newVarTable = M.insert (vs var) (vs val) (vartable ss);
-      return ss{vartable = newVarTable}
-runTopLevel t ss (TLCnd (IfElse pred trueCl falseCl)) = do
-  let cmds = (if evalPred ss pred then trueCl else falseCl)
-  newSs <- foldM (runTopLevel t) ss (map TLCmd cmds)
-  return newSs
+runTopLevel t ss tlexpr = do
+  case tlexpr of
+    (TLCmd cmd) -> do
+      let vs = varSub (vartable ss)
+      case cmd of
+        (Cmd _ _ _ _ _) ->
+          executeCmd ss t cmd
+        (Assign var val) -> do
+          let newVarTable = M.insert (vs var) (vs val) (vartable ss);
+          return ss{vartable = newVarTable}
 
+    (TLCnd (IfElse pred trueCl falseCl)) -> do
+
+      let cmds = if evalPred ss pred then trueCl else falseCl
+      newSs <- foldM (runTopLevel t) ss cmds
+      return newSs
+
+    (TLLoop (WhileLoop pred block)) -> do
+      
+      let loop ss = do
+            newSs <- foldM (runTopLevel t) ss block
+            if evalPred newSs pred then loop newSs else return newSs
+      if evalPred ss pred then loop ss else return ss
 
 absolutePath :: FilePath -> FilePath -> IO FilePath
 absolutePath wDir fp = do

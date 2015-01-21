@@ -1,17 +1,17 @@
-module Hash.Parsing.HashParser where
+module Parsing.HashParser where
 
 import Text.Parsec.String (Parser)
 import Text.Parsec.Char (digit, char, string, spaces, letter, satisfy, alphaNum, anyChar, noneOf, oneOf)
 import Text.Parsec (parse, ParseError, try, optionMaybe)
-import Text.Parsec.Combinator (many1, sepBy1)
+import Text.Parsec.Combinator (many1, sepBy1, choice, optional)
 import Text.Parsec.Expr
 import Control.Applicative ((<|>), (<$>), (<$), (<*>), (<*), (*>), Applicative, many)
 import Control.Monad (when)
 import Data.Char (digitToInt, isAlphaNum, isLetter)
 import Data.Maybe (isNothing, fromMaybe)
-import Hash.Language.Expressions
+import Language.Expressions
 
-err = "An error has occurred"
+err = "Parse error"
 
 infixr 5 <:>
 (<:>) :: Applicative f => f a -> f [a] -> f [a] 
@@ -22,14 +22,20 @@ token = (<* spaces)
 
 parseTLExpr = parsed . betterParse (many tlexpr)
 
+parseArithExpr = parsed . betterParse arith
+
+parseArgs = parsed . betterParse (many (try stringLiteral <|> expr))
+
 parsed (Right s) = s
-parsed (Left _)  = error err
+parsed (Left pe) = error (show pe) 
 
 betterParse :: Parser a -> String -> Either ParseError a
 betterParse p = parse (spaces *> p) err
 
 anyString :: Parser String
-anyString = token $ many1 (noneOf ['=', ' ', '<', '>', '(', ')', '\n', ';', '{', '}', '#'])
+anyString = token $ many1 (noneOf ['=', ' ', '<', '>', '(', ')',
+                                  '\n', ';', '{', '}', '#',
+                                  '+', '*', '%'])
 
 anyLitString :: Parser String
 anyLitString = token $ many (noneOf ['"'])
@@ -52,8 +58,16 @@ variable = do
   spaces
   return (first:rest)
 
+arithExpr :: Parser String
+arithExpr = do
+  token $ string "$"
+  h <- char '['
+  ret <- many (noneOf [']'])
+  symbol ']'
+  return (h:ret)
+
 varExpr :: Parser Expr
-varExpr = Var <$> variable
+varExpr = Var <$> (try variable <|> arithExpr)
 
 expr :: Parser Expr
 expr = try varExpr <|> strExpr
@@ -67,7 +81,7 @@ assign :: Parser Cmd
 assign = do
   varName <- strExpr
   char '='
-  value <- strExpr
+  value <- expr
   spaces
   symbol ';'
   return (Assign varName value)
@@ -127,34 +141,67 @@ comp = do
   return (opConst expr1 expr2)
 
 
-table = [[unary '!' Not], [binary '&' And], [binary '|' Or]]
-  where binary sym f = Infix (mkParser sym f) AssocLeft
-        mkParser s f = do
-          char s
+tableLog = [[unary '!' Not], [binary '&' And], [binary '|' Or]]
+
+binary sym f = Infix (symParser sym f) AssocLeft
+
+binary' str f = Infix (strParser str f) AssocLeft
+  where strParser s f = do
+          string s
           spaces
           return f
-        unary sym f = Prefix (mkParser sym f)
+        
+unary sym f = Prefix (symParser sym f)
+
+symParser s f = do
+  char s
+  spaces
+  return f
+
+tableArith = [[binary' "**" Exp], [binary '*' Mul, binary '/' Div, binary '%' Mod], 
+              [binary '+' Plus, binary '-' Minus], [unary '-' Neg]]
 
 prd :: Parser Pred
-prd = buildExpressionParser table other
+prd = buildExpressionParser tableLog other
   where other = cmp <|> parenPred
         cmp = do
           c <- comp
           spaces
           return (Pred c)
         parenPred = do
-          char '('
+          symbol '('
           pr <- prd
-          char ')'
+          symbol ')'
           spaces
           return (Parens pr)
 
-clause :: Parser [Cmd]
-clause = do
+arith :: Parser ArithExpr
+arith = buildExpressionParser tableArith other
+  where other = (Val <$> expr) <|> parensArith
+        parensArith = do
+          symbol '('
+          exp <- arith
+          symbol ')'
+          return (ParensAE exp)
+
+block :: Parser [TLExpr]
+block = do
   symbol '{'
-  cmds <- many cmdOrAssign
+  cmds <- many tlexpr
   symbol '}'
   return (cmds)
+
+while :: Parser WhileLoop
+while = do
+  string "while"
+  spaces
+  symbol '('
+  cnd <- prd
+  spaces
+  symbol ')'
+  cmds <- block
+  spaces
+  return $ WhileLoop cnd cmds
 
 
 conditional :: Parser Conditional
@@ -166,11 +213,11 @@ conditional = do
   spaces
   char ')'
   spaces
-  cmds1 <- clause
+  cmds1 <- block
   spaces
   el <- optionMaybe $ string "else"
   spaces
-  cmds2 <- optionMaybe clause
+  cmds2 <- optionMaybe block
   spaces
   fi <- string "fi"
   spaces
@@ -185,7 +232,7 @@ comment = do
   
 
 tlexpr :: Parser TLExpr
-tlexpr = many comment *> (try (TLCmd <$> cmdOrAssign) <|> (TLCnd <$> conditional))
+tlexpr = many comment *> choice [try (TLLoop <$> while), try (TLCmd <$> cmdOrAssign), (TLCnd <$> conditional)]
   
   
 
